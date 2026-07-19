@@ -42,14 +42,16 @@ space-finder ~/dev
 | Command | What it does |
 | --- | --- |
 | `scan <path>` | Walk the path once and cache the result. |
-| `watch <path>` | Rescan forever on an interval to keep the cache warm. |
+| `watch <path>` | Rescan one path forever on an interval. |
+| `watch-all` | Rescan *every* cached root forever (the any-dir daemon). |
 | `show <path>` | Breakdown of a path's direct children, largest first (default command). |
 | `top <path>` | Largest directories found *anywhere* below the path. |
 | `files <path>` | Largest individual files below the path. |
 | `tui <path>` | Interactive drill-down browser (arrows to move, enter to descend, left to go back). |
 | `roots` | List every cached root and how fresh it is. |
-| `install-service <path>` | Write a systemd user unit so the scan runs in the background for good. |
-| `uninstall-service <path>` | Print the commands to remove that unit. |
+| `forget <path>` | Drop a cached root and delete its cache file. |
+| `install-service [path]` | Write a systemd user unit. No path = one daemon for all roots. |
+| `uninstall-service [path]` | Print the commands to remove that unit. |
 
 Read commands auto-scan on first use if there is no cache yet, so `show` always
 works even before you have run `scan`.
@@ -62,24 +64,31 @@ default 8), `--cross-fs` (follow into other mounted filesystems, off by default)
 
 ## Always finding: keep the cache warm
 
-Two ways to keep it up to date so a read is always fresh and instant.
+The path you scan is not baked into anything. Every path you `scan` (or `show`,
+which auto-scans on first use) is registered as a root, and one background daemon
+keeps all of them warm. So you run it from any dir on any path and it keeps up on
+its own.
 
-Foreground loop, handy for a quick session:
-
-```bash
-./space_finder.py watch ~/dev --interval 300
-```
-
-Background systemd user service, the set-and-forget option:
+Set up the daemon once:
 
 ```bash
-./space_finder.py install-service ~/dev --interval 300
+./space_finder.py install-service          # no path: watches ALL cached roots
 systemctl --user daemon-reload
-systemctl --user enable --now space-finder-home-kieran-dev.service
-loginctl enable-linger "$USER"   # keep it running after you log out
+systemctl --user enable --now space-finder.service
+loginctl enable-linger "$USER"             # keep it running after you log out
 ```
 
-The scanner runs at `nice 10` so it stays out of the way.
+From then on, just use the tool. Anything you look at gets kept fresh:
+
+```bash
+./space_finder.py scan ~/other-big-dir     # now the daemon watches this too
+./space_finder.py forget ~/other-big-dir   # stop watching it
+```
+
+If you only ever care about one path, there is also a single-path version:
+`./space_finder.py watch ~/dev` in the foreground, or
+`install-service ~/dev` for a dedicated unit. The scanner always runs at
+`nice 10` so it stays out of the way.
 
 ---
 

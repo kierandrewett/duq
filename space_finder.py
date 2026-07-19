@@ -295,6 +295,10 @@ def run_scan(root, one_file_system=True, apparent=False, workers=8, quiet=False)
         "total_size": stats["total_size"],
         "total_files": stats["total_files"],
         "total_dirs": stats["total_dirs"],
+        # remember how this root was scanned so the background daemon can
+        # keep rescanning it the same way
+        "one_file_system": one_file_system,
+        "apparent": apparent,
     })
     if not quiet:
         print(
@@ -560,6 +564,58 @@ def run_watch(root, interval, one_file_system, apparent, workers):
             time.sleep(slept)
 
 
+def run_watch_all(interval, workers):
+    """Keep every cached root warm. This is the "run it from any dir" daemon:
+    anything you scan or show gets registered in the roots index, and this loop
+    rescans them all, each with the options it was originally scanned with."""
+    try:
+        os.nice(10)
+    except (OSError, AttributeError):
+        pass
+    print(f"[watch-all] keeping all cached roots warm, every {interval}s (nice)",
+          file=sys.stderr)
+    while True:
+        started = time.time()
+        idx = load_roots_index()
+        if not idx:
+            print("[watch-all] no roots yet; run: space-finder scan <path>",
+                  file=sys.stderr)
+        for root, meta in idx.items():
+            if not os.path.isdir(root):
+                print(f"[watch-all] skip missing {root}", file=sys.stderr)
+                continue
+            try:
+                run_scan(
+                    root,
+                    meta.get("one_file_system", True),
+                    meta.get("apparent", False),
+                    workers,
+                    quiet=False,
+                )
+            except Exception as exc:  # one bad root must not kill the loop
+                print(f"[watch-all] scan failed for {root}: {exc}", file=sys.stderr)
+        slept = interval - (time.time() - started)
+        if slept > 0:
+            time.sleep(slept)
+
+
+def forget_root(path):
+    """Drop a root from the index and delete its cache file."""
+    root = os.path.abspath(path)
+    idx = load_roots_index()
+    if root not in idx:
+        print(f"space-finder: {root} is not a cached root", file=sys.stderr)
+        print("  cached roots:  space-finder roots", file=sys.stderr)
+        return
+    del idx[root]
+    atomic_write_json(ROOTS_INDEX, idx)
+    try:
+        os.remove(cache_path_for(root))
+    except OSError:
+        pass
+    print(f"[forget] removed {root}")
+
+
 def service_slug(root):
     slug = root.strip("/").replace("/", "-").replace(" ", "_") or "root"
     return f"space-finder-{slug}"
@@ -601,8 +657,39 @@ WantedBy=default.target
     print(f"    loginctl enable-linger {os.environ.get('USER', '')}   # survive logout")
 
 
-def uninstall_service(root):
-    name = service_slug(os.path.abspath(root))
+def install_global_service(interval, workers):
+    """Install a single service that keeps every cached root warm."""
+    unit_dir = os.path.expanduser("~/.config/systemd/user")
+    os.makedirs(unit_dir, exist_ok=True)
+    name = "space-finder"
+    script = os.path.abspath(__file__)
+    py = sys.executable
+    unit = f"""[Unit]
+Description=space-finder background scan of all cached roots
+After=default.target
+
+[Service]
+Type=simple
+ExecStart={py} {script} watch-all --interval {interval} --workers {workers}
+Nice=10
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+"""
+    unit_path = os.path.join(unit_dir, name + ".service")
+    with open(unit_path, "w", encoding="utf-8") as fh:
+        fh.write(unit)
+    print(f"[service] wrote {unit_path}")
+    print("[service] this keeps every path you scan warm, from any dir. enable it:")
+    print(f"    systemctl --user daemon-reload")
+    print(f"    systemctl --user enable --now {name}.service")
+    print(f"    loginctl enable-linger {os.environ.get('USER', '')}   # survive logout")
+
+
+def uninstall_service(root=None):
+    name = "space-finder" if root is None else service_slug(os.path.abspath(root))
     unit_path = os.path.expanduser(f"~/.config/systemd/user/{name}.service")
     print(f"[service] stop and remove with:")
     print(f"    systemctl --user disable --now {name}.service")
@@ -668,11 +755,17 @@ def build_parser():
     sp.add_argument("path")
     add_scan_flags(sp)
 
-    wp = sub.add_parser("watch", help="rescan a path forever to keep the cache warm")
+    wp = sub.add_parser("watch", help="rescan one path forever to keep its cache warm")
     wp.add_argument("path")
     wp.add_argument("--interval", type=int, default=300,
                     help="seconds between scans (default 300)")
     add_scan_flags(wp)
+
+    wap = sub.add_parser("watch-all",
+                         help="rescan every cached root forever (the any-dir daemon)")
+    wap.add_argument("--interval", type=int, default=300,
+                     help="seconds between scan cycles (default 300)")
+    wap.add_argument("--workers", type=int, default=8, help="scanner threads")
 
     shp = sub.add_parser("show", help="breakdown of a path from cache (default)")
     shp.add_argument("path", nargs="?", default=".")
@@ -695,13 +788,23 @@ def build_parser():
 
     sub.add_parser("roots", help="list cached roots")
 
-    isp = sub.add_parser("install-service", help="write a systemd user unit to watch a path")
-    isp.add_argument("path")
-    isp.add_argument("--interval", type=int, default=300)
-    add_scan_flags(isp)
+    fgp = sub.add_parser("forget", help="drop a cached root and its cache file")
+    fgp.add_argument("path")
 
-    usp = sub.add_parser("uninstall-service", help="print commands to remove the unit")
-    usp.add_argument("path")
+    isp = sub.add_parser(
+        "install-service",
+        help="write a systemd user unit; no path = the any-dir daemon for all roots",
+    )
+    isp.add_argument("path", nargs="?",
+                     help="omit to install one service that watches all cached roots")
+    isp.add_argument("--interval", type=int, default=300)
+    isp.add_argument("--workers", type=int, default=8)
+    isp.add_argument("--cross-fs", action="store_true")
+    isp.add_argument("--apparent", action="store_true")
+
+    usp = sub.add_parser("uninstall-service",
+                         help="print commands to remove a unit (no path = the any-dir daemon)")
+    usp.add_argument("path", nargs="?")
 
     return p
 
@@ -717,8 +820,8 @@ def main(argv=None):
             argv = [a for a in argv if a != flag]
 
     # Allow "space-finder ~/dev" as a shortcut for "space-finder show ~/dev".
-    known = {"scan", "watch", "show", "top", "files", "tui", "roots",
-             "install-service", "uninstall-service"}
+    known = {"scan", "watch", "watch-all", "show", "top", "files", "tui", "roots",
+             "forget", "install-service", "uninstall-service"}
     if argv and not argv[0].startswith("-") and argv[0] not in known:
         argv.insert(0, "show")
 
@@ -734,13 +837,24 @@ def main(argv=None):
         run_watch(args.path, args.interval, not args.cross_fs, args.apparent, args.workers)
         return 0
 
+    if cmd == "watch-all":
+        run_watch_all(args.interval, args.workers)
+        return 0
+
     if cmd == "roots":
         print_roots(style)
         return 0
 
+    if cmd == "forget":
+        forget_root(args.path)
+        return 0
+
     if cmd == "install-service":
-        install_service(args.path, args.interval, not args.cross_fs,
-                        args.apparent, args.workers)
+        if args.path:
+            install_service(args.path, args.interval, not args.cross_fs,
+                            args.apparent, args.workers)
+        else:
+            install_global_service(args.interval, args.workers)
         return 0
 
     if cmd == "uninstall-service":
