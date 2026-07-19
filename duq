@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""space-finder: find where disk space is being used at a path, fast.
+"""duq: find where disk space is being used at a path, fast.
 
 The design splits the slow part from the fast part. Walking a big tree like
 ~/dev can take a while (a naive `du -sh` on it did not finish in two minutes on
@@ -8,7 +8,7 @@ scanner keeps a per-root cache warm on disk, and every read command loads that
 cache and answers instantly. That is how "show me within 10s" holds even when
 the tree is large: the reader reads bytes off disk, it does not walk the tree.
 
-Cache layout (all under ~/.cache/space-finder):
+Cache layout (all under ~/.cache/duq):
     roots.json          index of scanned roots -> metadata
     <sha1(root)>.json   the size tree + top-files list for one root
 
@@ -29,7 +29,7 @@ import time
 
 CACHE_DIR = os.path.join(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
-    "space-finder",
+    "duq",
 )
 ROOTS_INDEX = os.path.join(CACHE_DIR, "roots.json")
 
@@ -273,7 +273,7 @@ def _build_tree(root, dirs):
 def run_scan(root, one_file_system=True, apparent=False, workers=8, quiet=False):
     root = os.path.abspath(root)
     if not os.path.isdir(root):
-        print(f"space-finder: not a directory: {root}", file=sys.stderr)
+        print(f"duq: not a directory: {root}", file=sys.stderr)
         return None
     started = time.time()
     tree, stats, top_files = scan_tree(root, one_file_system, apparent, workers)
@@ -410,8 +410,8 @@ def print_breakdown(cache, target, limit, style):
     root = cache["root"]
     node = descend(cache["tree"], root, target)
     if node is None:
-        print(f"space-finder: {target} not in cached scan of {root}", file=sys.stderr)
-        print("  run:  space-finder scan " + target, file=sys.stderr)
+        print(f"duq: {target} not in cached scan of {root}", file=sys.stderr)
+        print("  run:  duq scan " + target, file=sys.stderr)
         return
     rows = [
         (c["size"], c["name"] + "/", c["file_count"])
@@ -448,7 +448,7 @@ def print_deep(cache, target, limit, style):
     root = cache["root"]
     node = descend(cache["tree"], root, target)
     if node is None:
-        print(f"space-finder: {target} not in cached scan of {root}", file=sys.stderr)
+        print(f"duq: {target} not in cached scan of {root}", file=sys.stderr)
         return
     out = []
     collect_all_dirs(node, target, out)
@@ -578,7 +578,7 @@ def run_watch_all(interval, workers):
         started = time.time()
         idx = load_roots_index()
         if not idx:
-            print("[watch-all] no roots yet; run: space-finder scan <path>",
+            print("[watch-all] no roots yet; run: duq scan <path>",
                   file=sys.stderr)
         for root, meta in idx.items():
             if not os.path.isdir(root):
@@ -604,8 +604,8 @@ def forget_root(path):
     root = os.path.abspath(path)
     idx = load_roots_index()
     if root not in idx:
-        print(f"space-finder: {root} is not a cached root", file=sys.stderr)
-        print("  cached roots:  space-finder roots", file=sys.stderr)
+        print(f"duq: {root} is not a cached root", file=sys.stderr)
+        print("  cached roots:  duq roots", file=sys.stderr)
         return
     del idx[root]
     atomic_write_json(ROOTS_INDEX, idx)
@@ -618,7 +618,7 @@ def forget_root(path):
 
 def service_slug(root):
     slug = root.strip("/").replace("/", "-").replace(" ", "_") or "root"
-    return f"space-finder-{slug}"
+    return f"duq-{slug}"
 
 
 def install_service(root, interval, one_file_system, apparent, workers):
@@ -634,7 +634,7 @@ def install_service(root, interval, one_file_system, apparent, workers):
     if apparent:
         flags += " --apparent"
     unit = f"""[Unit]
-Description=space-finder background scan of {root}
+Description=duq background scan of {root}
 After=default.target
 
 [Service]
@@ -661,11 +661,11 @@ def install_global_service(interval, workers):
     """Install a single service that keeps every cached root warm."""
     unit_dir = os.path.expanduser("~/.config/systemd/user")
     os.makedirs(unit_dir, exist_ok=True)
-    name = "space-finder"
+    name = "duq"
     script = os.path.abspath(__file__)
     py = sys.executable
     unit = f"""[Unit]
-Description=space-finder background scan of all cached roots
+Description=duq background scan of all cached roots
 After=default.target
 
 [Service]
@@ -689,7 +689,7 @@ WantedBy=default.target
 
 
 def uninstall_service(root=None):
-    name = "space-finder" if root is None else service_slug(os.path.abspath(root))
+    name = "duq" if root is None else service_slug(os.path.abspath(root))
     unit_path = os.path.expanduser(f"~/.config/systemd/user/{name}.service")
     print(f"[service] stop and remove with:")
     print(f"    systemctl --user disable --now {name}.service")
@@ -700,7 +700,7 @@ def uninstall_service(root=None):
 def print_roots(style):
     idx = load_roots_index()
     if not idx:
-        print("No roots scanned yet. Try:  space-finder scan ~/dev")
+        print("No roots scanned yet. Try:  duq scan ~/dev")
         return
     print(style.bold("Cached roots:"))
     for root, meta in sorted(idx.items(), key=lambda kv: -kv[1].get("total_size", 0)):
@@ -744,7 +744,7 @@ def add_scan_flags(p):
 
 def build_parser():
     p = argparse.ArgumentParser(
-        prog="space-finder",
+        prog="duq",
         description="Find where disk space is being used at a path, fast.",
     )
     p.add_argument("-C", "--no-color", action="store_true",
@@ -819,7 +819,7 @@ def main(argv=None):
             no_color = True
             argv = [a for a in argv if a != flag]
 
-    # Allow "space-finder ~/dev" as a shortcut for "space-finder show ~/dev".
+    # Allow "duq ~/dev" as a shortcut for "duq show ~/dev".
     known = {"scan", "watch", "watch-all", "show", "top", "files", "tui", "roots",
              "forget", "install-service", "uninstall-service"}
     if argv and not argv[0].startswith("-") and argv[0] not in known:

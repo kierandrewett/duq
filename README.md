@@ -1,11 +1,11 @@
-# space-finder
+# duq
 
 Find where disk space is being used at a path, fast. Point it at something like
 `~/dev` and it tells you what is eating the space, in under a second once warm.
 
 The trick is that it never makes you wait for a walk. Walking a big tree is slow
 (a plain `du -sh ~/dev` did not finish in two minutes here, on a cold cache). So
-space-finder splits the work: a background scanner keeps a per-path cache warm on
+duq splits the work: a background scanner keeps a per-path cache warm on
 disk, and every read command answers straight from that cache. On my `~/dev`
 (618G, ~10 million files) a full scan takes about 2 minutes, and reading the
 result back takes under a second.
@@ -17,22 +17,22 @@ Stdlib Python only. Nothing to install.
 ## Quick start
 
 ```bash
-# scan a path once (writes a cache under ~/.cache/space-finder)
-./space_finder.py scan ~/dev
+# scan a path once (writes a cache under ~/.cache/duq)
+duq scan ~/dev
 
 # show the breakdown, instantly, from cache
-./space_finder.py show ~/dev
-./space_finder.py ~/dev            # "show" is the default, so this works too
+duq show ~/dev
+duq ~/dev            # "show" is the default, so this works too
 
 # drill into any subpath that the scan already covered
-./space_finder.py show ~/dev/atlas-2
+duq show ~/dev/atlas-2
 ```
 
 Put it on your PATH if you want a shorter command:
 
 ```bash
-ln -s "$PWD/space_finder.py" ~/.local/bin/space-finder
-space-finder ~/dev
+ln -s "$PWD/duq" ~/.local/bin/duq
+duq ~/dev
 ```
 
 ---
@@ -72,21 +72,21 @@ its own.
 Set up the daemon once:
 
 ```bash
-./space_finder.py install-service          # no path: watches ALL cached roots
+duq install-service          # no path: watches ALL cached roots
 systemctl --user daemon-reload
-systemctl --user enable --now space-finder.service
+systemctl --user enable --now duq.service
 loginctl enable-linger "$USER"             # keep it running after you log out
 ```
 
 From then on, just use the tool. Anything you look at gets kept fresh:
 
 ```bash
-./space_finder.py scan ~/other-big-dir     # now the daemon watches this too
-./space_finder.py forget ~/other-big-dir   # stop watching it
+duq scan ~/other-big-dir     # now the daemon watches this too
+duq forget ~/other-big-dir   # stop watching it
 ```
 
 If you only ever care about one path, there is also a single-path version:
-`./space_finder.py watch ~/dev` in the foreground, or
+`duq watch ~/dev` in the foreground, or
 `install-service ~/dev` for a dedicated unit. The scanner always runs at
 `nice 10` so it stays out of the way.
 
@@ -102,7 +102,7 @@ If you only ever care about one path, there is also a single-path version:
 - Hardlinked files are counted once.
 - Stays on the starting filesystem by default, so a disk mounted under the path
   is not pulled into the total. Use `--cross-fs` to include it.
-- Cache is atomic JSON per root under `~/.cache/space-finder/`: a temp file plus
+- Cache is atomic JSON per root under `~/.cache/duq/`: a temp file plus
   rename, so a reader never sees a half-written file.
 
 ---
