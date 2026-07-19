@@ -715,22 +715,25 @@ def print_roots(style):
 # cli
 # --------------------------------------------------------------------------
 
-def ensure_cache(path, args, style):
-    """Return a fresh-enough cache for `path`, scanning first if we must."""
+def ensure_cache(path, explicit, args, style):
+    """Return a cache for `path`, or None if there is none and we should not scan.
+
+    A synchronous scan can take minutes on a big tree, so we only ever launch one
+    when the user names a path explicitly. A bare `duq` in an uncached directory
+    returns None instead, so the caller can show the roots overview rather than
+    silently walking whatever directory you happen to be standing in.
+    """
     root = find_cached_root(path)
-    if root is None:
-        print(style.dim(f"no cache for {path}, scanning once..."), file=sys.stderr)
-        payload = run_scan(
-            path, not args.cross_fs, args.apparent, args.workers, quiet=False
-        )
-        return payload
-    cache = load_cache(root)
-    if cache is None:
-        payload = run_scan(
-            root, not args.cross_fs, args.apparent, args.workers, quiet=False
-        )
-        return payload
-    return cache
+    if root is not None:
+        cache = load_cache(root)
+        if cache is not None:
+            return cache
+    if not explicit:
+        return None
+    target = root or path
+    print(style.dim(f"no cache for {target}, scanning once (Ctrl-C to cancel)..."),
+          file=sys.stderr)
+    return run_scan(target, not args.cross_fs, args.apparent, args.workers, quiet=False)
 
 
 def add_scan_flags(p):
@@ -768,22 +771,22 @@ def build_parser():
     wap.add_argument("--workers", type=int, default=8, help="scanner threads")
 
     shp = sub.add_parser("show", help="breakdown of a path from cache (default)")
-    shp.add_argument("path", nargs="?", default=".")
+    shp.add_argument("path", nargs="?", default=None)
     shp.add_argument("--limit", type=int, default=25)
     add_scan_flags(shp)
 
     tp = sub.add_parser("top", help="largest directories anywhere under a path")
-    tp.add_argument("path", nargs="?", default=".")
+    tp.add_argument("path", nargs="?", default=None)
     tp.add_argument("--limit", type=int, default=25)
     add_scan_flags(tp)
 
     fp = sub.add_parser("files", help="largest individual files under a path")
-    fp.add_argument("path", nargs="?", default=".")
+    fp.add_argument("path", nargs="?", default=None)
     fp.add_argument("--limit", type=int, default=25)
     add_scan_flags(fp)
 
     ip = sub.add_parser("tui", help="interactive drill-down browser")
-    ip.add_argument("path", nargs="?", default=".")
+    ip.add_argument("path", nargs="?", default=None)
     add_scan_flags(ip)
 
     sub.add_parser("roots", help="list cached roots")
@@ -819,10 +822,12 @@ def main(argv=None):
             no_color = True
             argv = [a for a in argv if a != flag]
 
-    # Allow "duq ~/dev" as a shortcut for "duq show ~/dev".
+    # "show" is the default command: "duq", "duq ~/dev" and "duq --limit 5" all
+    # mean show. Anything whose first token is not a known subcommand routes to
+    # show, except top-level help.
     known = {"scan", "watch", "watch-all", "show", "top", "files", "tui", "roots",
              "forget", "install-service", "uninstall-service"}
-    if argv and not argv[0].startswith("-") and argv[0] not in known:
+    if not argv or (argv[0] not in known and argv[0] not in ("-h", "--help")):
         argv.insert(0, "show")
 
     args = build_parser().parse_args(argv)
@@ -861,10 +866,19 @@ def main(argv=None):
         uninstall_service(args.path)
         return 0
 
-    # read commands share cache handling
-    path = os.path.abspath(getattr(args, "path", ".") or ".")
-    cache = ensure_cache(path, args, style)
+    # read commands share cache handling. A path is "explicit" only when the
+    # user actually typed one; a bare `duq` defaults to cwd but never triggers
+    # a big blocking scan of it.
+    raw_path = getattr(args, "path", None)
+    explicit = raw_path is not None
+    path = os.path.abspath(raw_path or ".")
+    cache = ensure_cache(path, explicit, args, style)
     if cache is None:
+        if not explicit:
+            print("No cached scan covers this directory "
+                  f"({path}).\n", file=sys.stderr)
+            print_roots(style)
+            print(style.dim("\nscan this directory with:  duq scan ."), file=sys.stderr)
         return 1
 
     if cmd == "show":
